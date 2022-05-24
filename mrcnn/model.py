@@ -922,6 +922,51 @@ def build_rpn_model(anchor_stride, anchors_per_location, depth):
     return KM.Model([input_feature_map], outputs, name="rpn_model")
 
 
+def rpn_graph_for_p_mask_rcnn(feature_map, gauss_ids_tensor, config):
+    """Builds the computation graph of Region Proposal Network for P_MASK_RCNN.
+    feature_map: backbone features [batch, height, width, depth]
+    gauss_ids_tensor: the index that will be selected to generate anchor
+    config: the config of P_MASK_RCNN
+    Returns:
+        rpn_class_logits: [batch, H * W * anchors_per_location, 2] Anchor classifier logits (before softmax)
+        rpn_probs: [batch, H * W * anchors_per_location, 2] Anchor classifier probabilities.
+        rpn_bbox: [batch, H * W * anchors_per_location, (dy, dx, log(dh), log(dw))] Deltas to be
+                  applied to anchors.
+    """
+    # TODO: check if stride of 2 causes alignment issues if the feature map
+    # is not even.
+    # Shared convolutional base of the RPN
+    depth = 512
+    shared = KL.Conv2D(depth, (3, 3), padding='same', activation='relu',
+                       strides=config.RPN_ANCHOR_STRIDE,
+                       name='rpn_conv_shared')(feature_map)
+    # select the pixels that will be used to generate anchor on the feature map
+    shared = sampling_module.GatherLayer(batch_size=config.BATCH_SIZE, depth=depth, name="gather_by_gauss")(
+        [shared, gauss_ids_tensor])
+    # return shared
+    # Anchor Score. [batch, height, width, anchors per location * 2].
+    x = KL.Conv2D(2 * len(config.RPN_ANCHOR_RATIOS), (1, 1), padding='valid',
+                  activation='linear', name='rpn_class_raw')(shared)
+
+    # Reshape to [batch, anchors, 2]
+    rpn_class_logits = KL.Lambda(
+        lambda t: tf.reshape(t, [tf.shape(t)[0], -1, 2]))(x)
+
+    # Softmax on last dimension of BG/FG.
+    rpn_probs = KL.Activation(
+        "softmax", name="rpn_class_xxx")(rpn_class_logits)
+
+    # Bounding box refinement. [batch, H, W, anchors per location * depth]
+    # where depth is [x, y, log(w), log(h)]
+    x = KL.Conv2D(len(config.RPN_ANCHOR_RATIOS) * 4, (1, 1), padding="valid",
+                  activation='linear', name='rpn_bbox_pred')(shared)
+
+    # Reshape to [batch, anchors, 4]
+    rpn_bbox = KL.Lambda(lambda t: tf.reshape(t, [tf.shape(t)[0], -1, 4]))(x)
+
+    return [rpn_class_logits, rpn_probs, rpn_bbox]
+
+
 def build_rpn_model_for_p_mask_rcnn(config):
     """Builds a Keras model of the Region Proposal Network for P_MASK_RCNN.
     It wraps the RPN graph so it can be used multiple times with shared
