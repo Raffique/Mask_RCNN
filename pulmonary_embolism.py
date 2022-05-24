@@ -161,6 +161,7 @@ class PulmonaryEmbolismDataset(utils.Dataset):
             sigma = np.array(gmm.sigma)
             print("sample from GMM")
             points = sample.sample_from_mixture_gaussian(alpha, mu, sigma, sample_No=sample_No)
+            os.makedirs('locations', exist_ok=True)
             np.savetxt(save_path, points, fmt="%d")
         # print(points.shape)
         self.sample_points = points

@@ -23,7 +23,7 @@ class SelectLayer(KE.Layer):
     def call(self, inputs):
         index_tensor = inputs
         # get the index of sample points that can be divided by the stride
-        mask = tf.logical_not(tf.cast(tf.reduce_sum(tf.mod(index_tensor, self.stride), axis=-1), dtype=tf.bool))
+        mask = tf.logical_not(tf.cast(tf.reduce_sum(tf.math.mod(index_tensor, self.stride), axis=-1), dtype=tf.bool))
         # get the points that the corresponding mask is true
         result = tf.cast(tf.boolean_mask(index_tensor, mask), tf.int32)
         # scale the points from the original image to the feature map
