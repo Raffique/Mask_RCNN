@@ -72,7 +72,7 @@ class PulmonaryConfig(Config):
 
     # use small validation steps since the epoch is small
     #VALIDATION_STEPS = 20
-    VALIDATION_STEPS = 10
+    VALIDATION_STEPS = 5
 
     MEAN_PIXEL = np.array([54.18, 54.18, 54.18])
 
@@ -368,7 +368,7 @@ if __name__ == "__main__":
         print("Training network heads")
         model.train(train_pulmonary, val_pulmonary,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=20,
+                    epochs=2,
                     layers='heads',
                     augmentation=augmentation)
         print("finish")
@@ -378,14 +378,14 @@ if __name__ == "__main__":
         print("Fine tune Resnet stage 4 and up")
         model.train(train_pulmonary, val_pulmonary,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=40,
+                    epochs=4,
                     layers='4+',
                     augmentation=augmentation)
 
         print("Fine tune all layers")
         model.train(train_pulmonary, val_pulmonary,
                     learning_rate=config.LEARNING_RATE / 10,
-                    epochs=80,
+                    epochs=8,
                     layers='all',
                     augmentation=augmentation)
     elif args.command == "inference":

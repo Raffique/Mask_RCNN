@@ -24,6 +24,7 @@ from tensorflow.python.eager import context
 import tensorflow.keras.models as KM
 
 from mrcnn import utils
+from mrcnn import sampling_module
 
 # Requires TensorFlow 2.0+
 from distutils.version import LooseVersion
@@ -919,6 +920,25 @@ def build_rpn_model(anchor_stride, anchors_per_location, depth):
                                  name="input_rpn_feature_map")
     outputs = rpn_graph(input_feature_map, anchors_per_location, anchor_stride)
     return KM.Model([input_feature_map], outputs, name="rpn_model")
+
+
+def build_rpn_model_for_p_mask_rcnn(config):
+    """Builds a Keras model of the Region Proposal Network for P_MASK_RCNN.
+    It wraps the RPN graph so it can be used multiple times with shared
+    weights.
+    config: the config for P_MASK_RCNN
+    Returns a Keras Model object. The model outputs, when called, are:
+    rpn_class_logits: [batch, H * W * anchors_per_location, 2] Anchor classifier logits (before softmax)
+    rpn_probs: [batch, H * W * anchors_per_location, 2] Anchor classifier probabilities.
+    rpn_bbox: [batch, H * W * anchors_per_location, (dy, dx, log(dh), log(dw))] Deltas to be
+                applied to anchors.
+    """
+    input_feature_map = KL.Input(shape=[None, None, config.TOP_DOWN_PYRAMID_SIZE],
+                                 name="input_rpn_feature_map")
+    # the index of the pixels that will be selected
+    select_index = KL.Input(shape=[None, 3], name="select_index", dtype=tf.int32)
+    outputs = rpn_graph_for_p_mask_rcnn(input_feature_map, select_index, config)
+    return KM.Model([input_feature_map, select_index], outputs, name="rpn_model_p_mask_rcnn")
 
 
 ############################################################
@@ -1921,6 +1941,35 @@ class MaskRCNN(object):
         # Note that P6 is used in RPN, but not in the classifier heads.
         rpn_feature_maps = [P2, P3, P4, P5, P6]
         mrcnn_feature_maps = [P2, P3, P4, P5]
+        """********************************MODIFIED IN*********************************************"""
+        backbone_shapes = compute_backbone_shapes(config, config.IMAGE_SHAPE)
+        # compute the up scale for each feature map and upsample the feature map
+        p2_scale = config.IMAGE_SHAPE[:2] // config.DOWN_SAMPLE_STRIDE[0] // backbone_shapes[0]
+        up_scale_p2 = KL.UpSampling2D(size=p2_scale, interpolation=config.UP_SAMPLING_STRATEGY)(P2)
+        p3_scale = config.IMAGE_SHAPE[:2] // config.DOWN_SAMPLE_STRIDE[1] // backbone_shapes[1]
+        up_scale_p3 = KL.UpSampling2D(size=p3_scale, interpolation=config.UP_SAMPLING_STRATEGY)(P3)
+        p4_scale = config.IMAGE_SHAPE[:2] // config.DOWN_SAMPLE_STRIDE[2] // backbone_shapes[2]
+        up_scale_p4 = KL.UpSampling2D(size=p4_scale, interpolation=config.UP_SAMPLING_STRATEGY)(P4)
+        p5_scale = config.IMAGE_SHAPE[:2] // config.DOWN_SAMPLE_STRIDE[3] // backbone_shapes[3]
+        up_scale_p5 = KL.UpSampling2D(size=p5_scale, interpolation=config.UP_SAMPLING_STRATEGY)(P5)
+        up_scale_feature_maps = [up_scale_p2, up_scale_p3, up_scale_p4, up_scale_p5]
+
+        # sample_ids = KL.Input(shape=(None, 2), name="sample_ids")
+        # get the sample pixels' index from the sample points
+        sample_ids = KL.Lambda(lambda t: tf.constant(self.sample_points, dtype=tf.int32), name="sample_points",
+                               trainable=False)(input_image)
+        # sampling_strides = KL.Lambda(lambda t: tf.constant(config.DOWN_SAMPLE_STRIDE), dtype=tf.int32)(sample_ids)
+        # compute the sample indexes for each feature map
+        p2_select_index = sampling_module.sampling_graph(sample_ids, config.DOWN_SAMPLE_STRIDE[0],
+                                                         config.IMAGE_SHAPE, config.BATCH_SIZE, name="p2_select_index")
+        p3_select_index = sampling_module.sampling_graph(sample_ids, config.DOWN_SAMPLE_STRIDE[1],
+                                                         config.IMAGE_SHAPE, config.BATCH_SIZE, name="p3_select_index")
+        p4_select_index = sampling_module.sampling_graph(sample_ids, config.DOWN_SAMPLE_STRIDE[2],
+                                                         config.IMAGE_SHAPE, config.BATCH_SIZE, name="p4_select_index")
+        p5_select_index = sampling_module.sampling_graph(sample_ids, config.DOWN_SAMPLE_STRIDE[3],
+                                                         config.IMAGE_SHAPE, config.BATCH_SIZE, name="p5_select_index")
+        select_indexes = [p2_select_index, p3_select_index, p4_select_index, p5_select_index]
+        """*****************************************END OF MOD******************************************************"""
 
         # Anchors
         if mode == "training":
@@ -1951,10 +2000,19 @@ class MaskRCNN(object):
         # RPN Model
         rpn = build_rpn_model(config.RPN_ANCHOR_STRIDE,
                               len(config.RPN_ANCHOR_RATIOS), config.TOP_DOWN_PYRAMID_SIZE)
+        # build P_MASK_RCNN's rpn model
+        p_rpn = build_rpn_model_for_p_mask_rcnn(config)
         # Loop through pyramid layers
         layer_outputs = []  # list of lists
-        for p in rpn_feature_maps:
-            layer_outputs.append(rpn([p]))
+        """ for p in rpn_feature_maps:
+            layer_outputs.append(rpn([p])) """
+        if config.MODEL_TYPE == "MASK_RCNN":
+            for p in rpn_feature_maps:
+                layer_outputs.append(rpn([p]))
+        # if the model type is P_MASK_RCNN, the  p_RPN will be choosen to build the rpn graph
+        elif config.MODEL_TYPE == "P_MASK_RCNN":
+            for p, s in zip(up_scale_feature_maps, select_indexes):
+                layer_outputs.append(p_rpn([p, s]))
         # Concatenate layer outputs
         # Convert from list of lists of level outputs to list of lists
         # of outputs across levels.
