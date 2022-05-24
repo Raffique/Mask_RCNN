@@ -2,7 +2,7 @@ import numpy as np
 import tensorflow as tf
 import keras.layers as KL
 import keras.models as KM
-import keras.engine as KE
+import keras.layers as KE
 
 
 class SelectLayer(KE.Layer):
